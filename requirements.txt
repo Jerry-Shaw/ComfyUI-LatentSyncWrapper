@@ -1,9 +1,10 @@
 diffusers
 mediapipe>=0.10.8
-transformers
+transformers<5
 huggingface-hub>=0.10.0
 omegaconf
 einops
+ffmpeg-python
 opencv-python
 face-alignment
 decord

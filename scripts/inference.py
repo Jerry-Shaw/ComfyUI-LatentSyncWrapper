@@ -11,6 +11,107 @@ from latentsync.whisper.audio2feature import Audio2Feature
 from DeepCache import DeepCacheSDHelper
 
 
+def get_comfyui_base_dir():
+    """获取 ComfyUI 的根目录"""
+    try:
+        import folder_paths
+        comfy_base = getattr(folder_paths, 'base_path', None)
+        if comfy_base and os.path.exists(comfy_base):
+            return comfy_base
+    except:
+        pass
+    
+    comfy_base = os.environ.get('ComfyUIBaseDir')
+    if comfy_base and os.path.exists(comfy_base):
+        return comfy_base
+    
+    return None
+
+
+def get_latentsync_models_dir():
+    """获取 LatentSync 模型的统一存放目录"""
+    comfy_base = get_comfyui_base_dir()
+    if comfy_base:
+        latentsync_models_dir = os.path.join(comfy_base, "models", "LatentSyncModels")
+        if not os.path.exists(latentsync_models_dir):
+            os.makedirs(latentsync_models_dir, exist_ok=True)
+        return latentsync_models_dir
+    return None
+
+
+def get_insightface_root():
+    """获取 insightface 根目录 - 保持原有路径 ComfyUI/models/insightface"""
+    comfy_base = get_comfyui_base_dir()
+    if comfy_base:
+        insightface_root = os.path.join(comfy_base, "models", "insightface")
+        if not os.path.exists(insightface_root):
+            os.makedirs(insightface_root, exist_ok=True)
+        return insightface_root
+    
+    # 回退到节点目录
+    cur_dir = os.path.dirname(os.path.abspath(__file__))
+    fallback_path = os.path.join(cur_dir, "..", "checkpoints", "auxiliary")
+    if not os.path.exists(fallback_path):
+        os.makedirs(fallback_path, exist_ok=True)
+    return fallback_path
+
+
+def download_insightface_models():
+    """下载 InsightFace buffalo_l 模型"""
+    insightface_root = get_insightface_root()
+    buffalo_dir = os.path.join(insightface_root, "models", "buffalo_l")
+    
+    # 检查 buffalo_l 是否存在
+    if os.path.exists(buffalo_dir) and os.path.exists(os.path.join(buffalo_dir, "det_10g.onnx")):
+        print(f"✓ InsightFace buffalo_l models found at: {buffalo_dir}")
+        return True
+    
+    print(f"Downloading InsightFace buffalo_l models...")
+    print(f"Target location: {buffalo_dir}")
+    
+    # 确保目录存在
+    os.makedirs(buffalo_dir, exist_ok=True)
+    
+    # InsightFace buffalo_l 模型文件列表
+    model_files = [
+        {
+            "name": "det_10g.onnx",
+            "url": "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip"
+        },
+        {
+            "name": "w600k_r50.onnx",
+            "url": "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip"
+        },
+        {
+            "name": "2d106det.onnx",
+            "url": "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip"
+        }
+    ]
+    
+    # 检查文件是否存在
+    missing_files = []
+    for model_file in model_files:
+        if not os.path.exists(os.path.join(buffalo_dir, model_file["name"])):
+            missing_files.append(model_file["name"])
+    
+    if missing_files:
+        print(f"Missing files: {missing_files}")
+        print("\n" + "="*80)
+        print("⚠️  InsightFace buffalo_l models not found!")
+        print("\nPlease manually download the models from:")
+        print("https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip")
+        print(f"\nExtract the zip file and place the contents in:")
+        print(f"{buffalo_dir}")
+        print("\nExpected files:")
+        print("  - det_10g.onnx")
+        print("  - w600k_r50.onnx")
+        print("  - 2d106det.onnx")
+        print("="*80 + "\n")
+        return False
+    
+    return True
+
+
 def main(config, args):
     if not os.path.exists(args.video_path):
         raise RuntimeError(f"Video path '{args.video_path}' not found")
@@ -62,23 +163,31 @@ def main(config, args):
         base_dir = os.path.dirname(script_dir)  # Go up one level from scripts/ to extension root
     
     # Try multiple VAE locations in order of preference
-    vae_locations = [
-        # New vae folder structure
+    vae_locations = []
+    
+    # 优先使用 LatentSyncModels 目录
+    latentsync_models_dir = get_latentsync_models_dir()
+    if latentsync_models_dir:
+        vae_locations.append(os.path.join(latentsync_models_dir, "vae", "sd-vae-ft-mse.safetensors"))
+        vae_locations.append(os.path.join(latentsync_models_dir, "vae"))
+        print(f"✓ Found LatentSyncModels directory: {latentsync_models_dir}")
+    
+    # 备用路径：节点目录下的 checkpoints
+    vae_locations.extend([
         os.path.join(base_dir, "checkpoints", "vae", "sd-vae-ft-mse.safetensors"),
-        os.path.join(base_dir, "checkpoints", "vae"),  # Directory with config.json
-        # Original locations
+        os.path.join(base_dir, "checkpoints", "vae"),
         os.path.join(base_dir, "checkpoints", "sd-vae-ft-mse.safetensors"),
         os.path.join(base_dir, "checkpoints", "sd-vae-ft-mse"),
-    ]
+    ])
     
     vae = None
     for vae_path in vae_locations:
         if os.path.exists(vae_path):
             try:
-                if vae_path.endswith('.safetensors'):
+                if isinstance(vae_path, str) and vae_path.endswith('.safetensors'):
                     print(f"Attempting to load VAE from safetensors file: {vae_path}")
                     vae = AutoencoderKL.from_single_file(vae_path, torch_dtype=dtype)
-                elif os.path.isdir(vae_path):
+                elif isinstance(vae_path, str) and os.path.isdir(vae_path):
                     print(f"Attempting to load VAE from directory: {vae_path}")
                     vae = AutoencoderKL.from_pretrained(vae_path, torch_dtype=dtype, local_files_only=True)
                 
@@ -87,7 +196,7 @@ def main(config, args):
                     break
             except Exception as e:
                 print(f"Failed to load VAE from {vae_path}: {str(e)}")
-                vae = None  # Reset vae to None if loading failed
+                vae = None
                 continue
     
     if vae is None:
@@ -107,12 +216,15 @@ def main(config, args):
             sample_size=512,
         ).to(dtype=dtype)
         print("⚠️  Using default VAE configuration - consider downloading VAE model locally for better results")
+        print("   Recommended download: https://huggingface.co/stabilityai/sd-vae-ft-mse-original/resolve/main/vae-ft-mse-840000-ema-pruned.safetensors")
+        print(f"   Place it in: {os.path.join(latentsync_models_dir, 'vae', 'sd-vae-ft-mse.safetensors') if latentsync_models_dir else 'LatentSyncModels/vae/'}")
 
     # Set VAE configuration
     vae.config.scaling_factor = 0.18215
     vae.config.shift_factor = 0
 
-    # Rest of the function continues as before...
+    # Load UNet - use the modified from_pretrained method
+    print("Loading UNet model...")
     unet, _ = UNet3DConditionModel.from_pretrained(
         OmegaConf.to_container(config.model),
         args.inference_ckpt_path,

@@ -28,7 +28,6 @@ from torchvision import transforms
 
 from einops import rearrange
 import cv2
-from decord import AudioReader, VideoReader
 import shutil
 import subprocess
 
@@ -44,37 +43,41 @@ def read_json(filepath: str):
 
 
 def read_video(video_path: str, change_fps=True, use_decord=True):
+    """
+    读取视频，使用 imageio 替代 decord
+    use_decord 参数保留用于兼容性，但实际不使用
+    """
     if change_fps:
-        temp_dir = "temp"
+        temp_dir = os.path.join(os.path.dirname(video_path), "temp_fps")
         if os.path.exists(temp_dir):
             shutil.rmtree(temp_dir)
         os.makedirs(temp_dir, exist_ok=True)
+        target_video_path = os.path.join(temp_dir, "video.mp4")
         command = (
-            f"ffmpeg -loglevel error -y -nostdin -i {video_path} -r 25 -crf 18 {os.path.join(temp_dir, 'video.mp4')}"
+            f"ffmpeg -loglevel error -y -nostdin -i {video_path} -r 25 -crf 18 {target_video_path}"
         )
         subprocess.run(command, shell=True)
-        target_video_path = os.path.join(temp_dir, "video.mp4")
     else:
         target_video_path = video_path
 
-    if use_decord:
-        return read_video_decord(target_video_path)
-    else:
-        return read_video_cv2(target_video_path)
+    # 使用 imageio 读取视频
+    return read_video_imageio(target_video_path)
 
 
-def read_video_decord(video_path: str):
-    vr = VideoReader(video_path)
-    video_frames = vr[:].asnumpy()
-    vr.seek(0)
-    return video_frames
+def read_video_imageio(video_path: str):
+    """使用 imageio 读取视频帧"""
+    reader = imageio.get_reader(video_path)
+    video_frames = []
+    for frame in reader:
+        video_frames.append(frame)
+    reader.close()
+    return np.array(video_frames)
 
 
 def read_video_cv2(video_path: str):
-    # Open the video file
+    """使用 OpenCV 读取视频（备用方案）"""
     cap = cv2.VideoCapture(video_path)
 
-    # Check if the video was opened successfully
     if not cap.isOpened():
         print("Error: Could not open video.")
         return np.array([])
@@ -82,37 +85,52 @@ def read_video_cv2(video_path: str):
     frames = []
 
     while True:
-        # Read a frame
         ret, frame = cap.read()
 
-        # If frame is read correctly ret is True
         if not ret:
             break
 
         # Convert BGR to RGB
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
         frames.append(frame_rgb)
 
-    # Release the video capture object
     cap.release()
-
     return np.array(frames)
 
 
 def read_audio(audio_path: str, audio_sample_rate: int = 16000):
+    """使用 soundfile 或 torchaudio 读取音频，替代 decord"""
     if audio_path is None:
         raise ValueError("Audio path is required.")
-    ar = AudioReader(audio_path, sample_rate=audio_sample_rate, mono=True)
-
-    # To access the audio samples
-    audio_samples = torch.from_numpy(ar[:].asnumpy())
-    audio_samples = audio_samples.squeeze(0)
-
-    return audio_samples
+    
+    import torch
+    import soundfile as sf
+    
+    audio_data, sr = sf.read(audio_path)
+    
+    # 转换为 mono 如果需要
+    if len(audio_data.shape) > 1:
+        audio_data = audio_data.mean(axis=1)
+    
+    # 如果采样率不匹配，使用 torchaudio 重采样
+    if sr != audio_sample_rate:
+        import torchaudio
+        import torch
+        
+        # 转换为 tensor
+        audio_tensor = torch.from_numpy(audio_data).float().unsqueeze(0)
+        
+        # 重采样
+        resampler = torchaudio.transforms.Resample(sr, audio_sample_rate)
+        audio_tensor = resampler(audio_tensor)
+        audio_data = audio_tensor.squeeze().numpy()
+        sr = audio_sample_rate
+    
+    return torch.from_numpy(audio_data)
 
 
 def write_video(video_output_path: str, video_frames: np.ndarray, fps: int):
+    """使用 imageio 写入视频"""
     with imageio.get_writer(
         video_output_path,
         fps=fps,
@@ -126,9 +144,9 @@ def write_video(video_output_path: str, video_frames: np.ndarray, fps: int):
 
 
 def write_video_cv2(video_output_path: str, video_frames: np.ndarray, fps: int):
+    """使用 OpenCV 写入视频（备用方案）"""
     height, width = video_frames[0].shape[:2]
     out = cv2.VideoWriter(video_output_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
-    # out = cv2.VideoWriter(video_output_path, cv2.VideoWriter_fourcc(*"vp09"), fps, (width, height))
     for frame in video_frames:
         frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
         out.write(frame)
@@ -149,12 +167,22 @@ def init_dist(backend="nccl", **kwargs):
 
 
 def zero_rank_print(s):
-    if dist.is_initialized() and dist.get_rank() == 0:
+    try:
+        if dist.is_available() and dist.is_initialized() and dist.get_rank() == 0:
+            print("### " + s)
+        elif not dist.is_available():
+            print("### " + s)
+    except:
         print("### " + s)
 
 
 def zero_rank_log(logger, message: str):
-    if dist.is_initialized() and dist.get_rank() == 0:
+    try:
+        if dist.is_available() and dist.is_initialized() and dist.get_rank() == 0:
+            logger.info(message)
+        elif not dist.is_available():
+            logger.info(message)
+    except:
         logger.info(message)
 
 
@@ -214,8 +242,6 @@ log_loss = nn.BCELoss(reduction="none")
 
 def cosine_loss(vision_embeds, audio_embeds, y):
     sims = nn.functional.cosine_similarity(vision_embeds, audio_embeds)
-    # sims[sims!=sims] = 0 # remove nan
-    # sims = sims.clamp(0, 1)
     loss = log_loss(sims.unsqueeze(1), y).squeeze()
     return loss
 

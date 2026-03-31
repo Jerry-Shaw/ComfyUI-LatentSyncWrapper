@@ -14,6 +14,7 @@
 
 from latentsync.utils.util import read_video, write_video
 from torchvision import transforms
+import os
 import cv2
 from einops import rearrange
 import torch
@@ -24,6 +25,25 @@ from .face_detector import FaceDetector
 
 
 def load_fixed_mask(resolution: int, mask_image_path="latentsync/utils/mask.png") -> torch.Tensor:
+    if not os.path.exists(mask_image_path):
+        # 尝试查找备用路径
+        possible_paths = [
+            mask_image_path,
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "mask.png"),
+            os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "utils", "mask.png"),
+        ]
+        
+        for path in possible_paths:
+            if os.path.exists(path):
+                mask_image_path = path
+                break
+        else:
+            # 如果找不到，创建一个全白的 mask
+            print(f"Warning: Mask image not found at {mask_image_path}, using default white mask")
+            mask_image = np.ones((resolution, resolution, 3), dtype=np.uint8) * 255
+            mask_image = rearrange(torch.from_numpy(mask_image), "h w c -> c h w")
+            return mask_image / 255.0
+    
     mask_image = cv2.imread(mask_image_path)
     mask_image = cv2.cvtColor(mask_image, cv2.COLOR_BGR2RGB)
     mask_image = cv2.resize(mask_image, (resolution, resolution), interpolation=cv2.INTER_LANCZOS4) / 255.0
