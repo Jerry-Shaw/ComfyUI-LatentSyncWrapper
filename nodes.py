@@ -469,17 +469,7 @@ def setup_models():
     
     # 下载 InsightFace buffalo_l 模型（保持原路径）
     download_insightface_models()
-    
-    # 可选：下载 VAE 模型的提示
-    vae_path = os.path.join(latentsync_models_dir, "vae", "sd-vae-ft-mse.safetensors")
-    if not os.path.exists(vae_path):
-        print("\n" + "="*80)
-        print("⚠️  VAE model not found. For better quality, download the VAE model:")
-        print("   Download from: https://huggingface.co/stabilityai/sd-vae-ft-mse/resolve/main/vae-ft-mse-840000-ema-pruned.safetensors")
-        print(f"   Place it at: {vae_path}")
-        print("   The node will use a default VAE configuration, which may affect quality.")
-        print("="*80 + "\n")
-    
+
 def get_latentsync_config_path(cur_dir):
     """获取 LatentSync 配置文件路径"""
     config_512 = os.path.join(cur_dir, "configs", "unet", "stage2_512.yaml")

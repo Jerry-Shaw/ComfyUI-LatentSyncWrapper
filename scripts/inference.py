@@ -1,6 +1,9 @@
 # At the top of inference.py, make sure you have these imports:
 import argparse
 import os
+import sys
+import shutil
+import json
 from omegaconf import OmegaConf
 import torch
 from diffusers import AutoencoderKL, DDIMScheduler
@@ -40,7 +43,7 @@ def get_latentsync_models_dir():
 
 
 def get_insightface_root():
-    """获取 insightface 根目录 - 保持原有路径 ComfyUI/models/insightface"""
+    """获取 insightface 根目录"""
     comfy_base = get_comfyui_base_dir()
     if comfy_base:
         insightface_root = os.path.join(comfy_base, "models", "insightface")
@@ -48,7 +51,6 @@ def get_insightface_root():
             os.makedirs(insightface_root, exist_ok=True)
         return insightface_root
     
-    # 回退到节点目录
     cur_dir = os.path.dirname(os.path.abspath(__file__))
     fallback_path = os.path.join(cur_dir, "..", "checkpoints", "auxiliary")
     if not os.path.exists(fallback_path):
@@ -61,7 +63,6 @@ def download_insightface_models():
     insightface_root = get_insightface_root()
     buffalo_dir = os.path.join(insightface_root, "models", "buffalo_l")
     
-    # 检查 buffalo_l 是否存在
     if os.path.exists(buffalo_dir) and os.path.exists(os.path.join(buffalo_dir, "det_10g.onnx")):
         print(f"✓ InsightFace buffalo_l models found at: {buffalo_dir}")
         return True
@@ -69,47 +70,78 @@ def download_insightface_models():
     print(f"Downloading InsightFace buffalo_l models...")
     print(f"Target location: {buffalo_dir}")
     
-    # 确保目录存在
     os.makedirs(buffalo_dir, exist_ok=True)
     
-    # InsightFace buffalo_l 模型文件列表
-    model_files = [
-        {
-            "name": "det_10g.onnx",
-            "url": "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip"
-        },
-        {
-            "name": "w600k_r50.onnx",
-            "url": "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip"
-        },
-        {
-            "name": "2d106det.onnx",
-            "url": "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip"
-        }
-    ]
-    
-    # 检查文件是否存在
     missing_files = []
-    for model_file in model_files:
-        if not os.path.exists(os.path.join(buffalo_dir, model_file["name"])):
-            missing_files.append(model_file["name"])
+    required_files = ["det_10g.onnx", "w600k_r50.onnx", "2d106det.onnx"]
+    for file in required_files:
+        if not os.path.exists(os.path.join(buffalo_dir, file)):
+            missing_files.append(file)
     
     if missing_files:
         print(f"Missing files: {missing_files}")
         print("\n" + "="*80)
         print("⚠️  InsightFace buffalo_l models not found!")
-        print("\nPlease manually download the models from:")
-        print("https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip")
-        print(f"\nExtract the zip file and place the contents in:")
-        print(f"{buffalo_dir}")
-        print("\nExpected files:")
-        print("  - det_10g.onnx")
-        print("  - w600k_r50.onnx")
-        print("  - 2d106det.onnx")
+        print("Please manually download from: https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip")
+        print(f"Extract to: {buffalo_dir}")
         print("="*80 + "\n")
         return False
     
     return True
+
+
+def download_vae_from_huggingface(vae_model_dir):
+    """从 HuggingFace 下载 VAE 模型（Diffusers 完整格式）"""
+    print(f"Downloading VAE from HuggingFace...")
+    os.makedirs(vae_model_dir, exist_ok=True)
+    
+    config_path = os.path.join(vae_model_dir, "config.json")
+    model_path = os.path.join(vae_model_dir, "diffusion_pytorch_model.safetensors")
+    
+    try:
+        from huggingface_hub import hf_hub_download
+        
+        # 下载 config.json
+        if not os.path.exists(config_path):
+            print("Downloading config.json from HuggingFace...")
+            downloaded_config = hf_hub_download(
+                repo_id="stabilityai/sd-vae-ft-mse",
+                filename="config.json",
+                cache_dir=vae_model_dir,
+                local_dir_use_symlinks=False,
+                resume=True
+            )
+            # 确保文件在目标路径
+            if downloaded_config != config_path:
+                shutil.copy2(downloaded_config, config_path)
+            print("✓ config.json downloaded")
+        
+        # 下载模型文件
+        if not os.path.exists(model_path):
+            print("Downloading diffusion_pytorch_model.safetensors from HuggingFace...")
+            downloaded_model = hf_hub_download(
+                repo_id="stabilityai/sd-vae-ft-mse",
+                filename="diffusion_pytorch_model.safetensors",
+                cache_dir=vae_model_dir,
+                local_dir_use_symlinks=False,
+                resume=True
+            )
+            if downloaded_model != model_path:
+                shutil.copy2(downloaded_model, model_path)
+            print("✓ diffusion_pytorch_model.safetensors downloaded")
+        
+        print(f"✓ VAE successfully downloaded to {vae_model_dir}")
+        return True
+        
+    except Exception as e:
+        print(f"Failed to download VAE from HuggingFace: {e}")
+        print("\n" + "="*80)
+        print("⚠️  Please manually download the VAE model files from HuggingFace:")
+        print("   config.json: https://huggingface.co/stabilityai/sd-vae-ft-mse/resolve/main/config.json")
+        print("   diffusion_pytorch_model.safetensors: https://huggingface.co/stabilityai/sd-vae-ft-mse/resolve/main/diffusion_pytorch_model.safetensors")
+        print(f"   Place both files in: {vae_model_dir}")
+        print("="*80 + "\n")
+        return False
 
 
 def main(config, args):
@@ -118,7 +150,6 @@ def main(config, args):
     if not os.path.exists(args.audio_path):
         raise RuntimeError(f"Audio path '{args.audio_path}' not found")
 
-    # Check if the GPU supports float16
     is_fp16_supported = torch.cuda.is_available() and torch.cuda.get_device_capability()[0] > 7
     dtype = torch.float16 if is_fp16_supported else torch.float32
 
@@ -126,7 +157,6 @@ def main(config, args):
     print(f"Input audio path: {args.audio_path}")
     print(f"Loaded checkpoint path: {args.inference_ckpt_path}")
 
-    # FIXED: Create DDIMScheduler directly (NO HUGGINGFACE)
     scheduler = DDIMScheduler(
         beta_end=0.012,
         beta_schedule="scaled_linear",
@@ -153,56 +183,50 @@ def main(config, args):
         audio_feat_length=config.data.audio_feat_length,
     )
 
-    # FIXED: Load VAE locally with proper path resolution
-    # Get the base directory (where the extension is located)
-    if hasattr(args, 'extension_dir'):
-        base_dir = args.extension_dir
-    else:
-        # Fallback: try to determine from script location
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        base_dir = os.path.dirname(script_dir)  # Go up one level from scripts/ to extension root
-    
-    # Try multiple VAE locations in order of preference
-    vae_locations = []
-    
-    # 优先使用 LatentSyncModels 目录
+    # ========== VAE 加载部分（统一使用官方 Diffusers 格式，下载源为 HuggingFace）==========
     latentsync_models_dir = get_latentsync_models_dir()
-    if latentsync_models_dir:
-        vae_locations.append(os.path.join(latentsync_models_dir, "vae", "sd-vae-ft-mse.safetensors"))
-        vae_locations.append(os.path.join(latentsync_models_dir, "vae"))
-        print(f"✓ Found LatentSyncModels directory: {latentsync_models_dir}")
     
-    # 备用路径：节点目录下的 checkpoints
-    vae_locations.extend([
-        os.path.join(base_dir, "checkpoints", "vae", "sd-vae-ft-mse.safetensors"),
-        os.path.join(base_dir, "checkpoints", "vae"),
-        os.path.join(base_dir, "checkpoints", "sd-vae-ft-mse.safetensors"),
-        os.path.join(base_dir, "checkpoints", "sd-vae-ft-mse"),
-    ])
+    if not latentsync_models_dir:
+        raise RuntimeError("Cannot find LatentSync models directory")
+    
+    print(f"✓ Found LatentSyncModels directory: {latentsync_models_dir}")
+    
+    # 统一路径：LatentSyncModels/vae/sd-vae-ft-mse/
+    vae_model_dir = os.path.join(latentsync_models_dir, "vae", "sd-vae-ft-mse")
+    config_path = os.path.join(vae_model_dir, "config.json")
+    model_path = os.path.join(vae_model_dir, "diffusion_pytorch_model.safetensors")
     
     vae = None
-    for vae_path in vae_locations:
-        if os.path.exists(vae_path):
-            try:
-                if isinstance(vae_path, str) and vae_path.endswith('.safetensors'):
-                    print(f"Attempting to load VAE from safetensors file: {vae_path}")
-                    vae = AutoencoderKL.from_single_file(vae_path, torch_dtype=dtype)
-                elif isinstance(vae_path, str) and os.path.isdir(vae_path):
-                    print(f"Attempting to load VAE from directory: {vae_path}")
-                    vae = AutoencoderKL.from_pretrained(vae_path, torch_dtype=dtype, local_files_only=True)
-                
-                if vae is not None:
-                    print(f"✓ Successfully loaded VAE from: {vae_path}")
-                    break
-            except Exception as e:
-                print(f"Failed to load VAE from {vae_path}: {str(e)}")
-                vae = None
-                continue
     
+    # 优先级1: 本地已有 Diffusers 格式，直接加载
+    if os.path.exists(config_path) and os.path.exists(model_path):
+        try:
+            print(f"Loading VAE with from_pretrained from: {vae_model_dir}")
+            vae = AutoencoderKL.from_pretrained(vae_model_dir, torch_dtype=dtype, local_files_only=True)
+            print(f"✓ Successfully loaded VAE (Diffusers format)")
+            print(f"  scaling_factor: {vae.config.scaling_factor}")
+            print(f"  shift_factor: {vae.config.shift_factor}")
+        except Exception as e:
+            print(f"Failed to load with from_pretrained: {e}")
+            vae = None
+    
+    # 优先级2: 从 HuggingFace 下载并加载
     if vae is None:
-        print("Local VAE not found in any location, creating VAE with standard configuration")
-        print(f"Searched locations: {vae_locations}")
-        # Create VAE with standard SD configuration if local model doesn't exist
+        print("Downloading VAE from HuggingFace...")
+        if download_vae_from_huggingface(vae_model_dir):
+            try:
+                print(f"Loading VAE with from_pretrained from: {vae_model_dir}")
+                vae = AutoencoderKL.from_pretrained(vae_model_dir, torch_dtype=dtype, local_files_only=True)
+                print(f"✓ Successfully loaded VAE")
+                print(f"  scaling_factor: {vae.config.scaling_factor}")
+                print(f"  shift_factor: {vae.config.shift_factor}")
+            except Exception as e:
+                print(f"Failed to load downloaded VAE: {e}")
+                vae = None
+    
+    # 优先级3: 最后的回退 - 创建默认 VAE
+    if vae is None:
+        print("⚠️  No VAE available, creating VAE with standard configuration")
         vae = AutoencoderKL(
             in_channels=3,
             out_channels=3,
@@ -215,15 +239,14 @@ def main(config, args):
             norm_num_groups=32,
             sample_size=512,
         ).to(dtype=dtype)
-        print("⚠️  Using default VAE configuration - consider downloading VAE model locally for better results")
-        print("   Recommended download: https://huggingface.co/stabilityai/sd-vae-ft-mse-original/resolve/main/vae-ft-mse-840000-ema-pruned.safetensors")
-        print(f"   Place it in: {os.path.join(latentsync_models_dir, 'vae', 'sd-vae-ft-mse.safetensors') if latentsync_models_dir else 'LatentSyncModels/vae/'}")
+        print("⚠️  Using default VAE configuration - quality may be affected")
 
-    # Set VAE configuration
+    # 确保 VAE 配置正确
     vae.config.scaling_factor = 0.18215
     vae.config.shift_factor = 0
+    print(f"Final VAE config - scaling_factor: {vae.config.scaling_factor}, shift_factor: {vae.config.shift_factor}")
 
-    # Load UNet - use the modified from_pretrained method
+    # Load UNet
     print("Loading UNet model...")
     unet, _ = UNet3DConditionModel.from_pretrained(
         OmegaConf.to_container(config.model),
@@ -240,7 +263,6 @@ def main(config, args):
         scheduler=scheduler,
     ).to("cuda")
 
-    # use DeepCache
     helper = DeepCacheSDHelper(pipe=pipeline)
     helper.set_params(cache_interval=3, cache_branch_id=0)
     helper.enable()
